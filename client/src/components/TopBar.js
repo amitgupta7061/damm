@@ -11,6 +11,7 @@ export default function TopBar({
   onRedo,
   onClear,
   onExport,
+  onExit,
 }) {
   const [copied, setCopied] = useState(false);
 
@@ -29,6 +30,9 @@ export default function TopBar({
   return (
     <div className="topbar" id="topbar">
       <div className="topbar-left">
+        <button className="topbar-btn" onClick={onExit} title="Exit to Dashboard" style={{ marginRight: 8 }}>
+          ←
+        </button>
         <div className="logo">
           <span className="logo-icon">✦</span>
           <span className="logo-text">CollabDraw</span>

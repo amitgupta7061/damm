@@ -1,17 +1,22 @@
 "use client";
-import { useEffect, useState, useCallback, useRef } from "react";
-import { useParams } from "next/navigation";
+import { useEffect, useState, useCallback } from "react";
+import { useParams, useRouter } from "next/navigation";
 import Canvas from "@/components/Canvas";
 import Toolbar from "@/components/Toolbar";
 import TopBar from "@/components/TopBar";
 import StylePanel from "@/components/StylePanel";
 import CursorOverlay from "@/components/CursorOverlay";
+import ExitModal from "@/components/ExitModal";
 import { useHistory } from "@/hooks/useHistory";
 import { useSocket } from "@/hooks/useSocket";
+import { useAuth } from "@/hooks/useAuth";
 import { TOOLS, DEFAULT_STYLE } from "@/lib/constants";
+
+const SERVER_URL = process.env.NEXT_PUBLIC_SERVER_URL || "http://localhost:3001";
 
 export default function RoomPage() {
   const params = useParams();
+  const router = useRouter();
   const roomId = params.roomId;
 
   const [tool, setTool] = useState(TOOLS.PENCIL);
@@ -21,6 +26,7 @@ export default function RoomPage() {
   const [username, setUsername] = useState("");
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
   const [scale, setScale] = useState(1);
+  const [isExitModalOpen, setIsExitModalOpen] = useState(false);
 
   const {
     elements,
@@ -43,29 +49,65 @@ export default function RoomPage() {
     emitCursorMove,
   } = useSocket();
 
-  // Get username
-  useEffect(() => {
-    const stored = sessionStorage.getItem("collabdraw-username");
-    if (stored) {
-      setUsername(stored);
-    } else {
-      const name = prompt("Enter your name:") || "Anonymous";
-      sessionStorage.setItem("collabdraw-username", name);
-      setUsername(name);
-    }
-  }, []);
+  const { user, token } = useAuth();
 
-  // Join room when connected
+  // Handle Auth and Local Storage Cache Restoration
+  useEffect(() => {
+    // If the user was redirected here after logging in with a cached layout:
+    const cachedData = localStorage.getItem(`collabdraw_cache_${roomId}`);
+    if (user && cachedData) {
+        try {
+            const parsed = JSON.parse(cachedData);
+            replaceElements(parsed);
+            
+            // Instantly trigger a save, then clear cache
+            fetch(`${SERVER_URL}/api/rooms/save`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": `Bearer ${token}`
+                },
+                body: JSON.stringify({ roomId, elements: parsed, name: `Board ${roomId}` })
+            });
+
+            localStorage.removeItem(`collabdraw_cache_${roomId}`);
+            alert("Your saved work has been recovered and secured!");
+        } catch (e) {
+            console.error("Failed to restore cache", e);
+        }
+    }
+  }, [user, token, roomId, replaceElements]);
+
+  // Get username for Socket
+  useEffect(() => {
+    if (user) {
+        setUsername(user.name);
+    } else {
+        const stored = sessionStorage.getItem("collabdraw-username");
+        if (stored) {
+        setUsername(stored);
+        } else {
+        const name = prompt("Enter your display name for the canvas:") || "Anonymous";
+        sessionStorage.setItem("collabdraw-username", name);
+        setUsername(name);
+        }
+    }
+  }, [user]);
+
+  // Join WebSocket Room
   useEffect(() => {
     if (isConnected && username && roomId && !joined) {
       joinRoom(roomId, username).then((data) => {
-        if (data.elements && data.elements.length > 0) {
+        if (data.elements && data.elements.length > 0 && elements.length === 0) {
           replaceElements(data.elements);
         }
         setJoined(true);
+      }).catch(err => {
+        alert("Action Denied: " + err.message);
+        router.push("/");
       });
     }
-  }, [isConnected, username, roomId, joined, joinRoom, replaceElements]);
+  }, [isConnected, username, roomId, joined, joinRoom, replaceElements, elements.length, router]);
 
   // Listen for remote events
   useEffect(() => {
@@ -73,58 +115,37 @@ export default function RoomPage() {
 
     on("element-drawn", ({ element }) => {
       setElements((prev) => {
-        // Avoid duplicates
         if (prev.find((e) => e.id === element.id)) return prev;
         return [...prev, element];
       }, false);
     });
 
     on("element-updated", ({ element }) => {
-      setElements(
-        (prev) => prev.map((e) => (e.id === element.id ? element : e)),
-        false
-      );
+      setElements((prev) => prev.map((e) => (e.id === element.id ? element : e)), false);
     });
 
     on("element-deleted", ({ elementId }) => {
-      setElements(
-        (prev) => prev.filter((e) => e.id !== elementId),
-        false
-      );
+      setElements((prev) => prev.filter((e) => e.id !== elementId), false);
     });
 
-    on("elements-synced", ({ elements: newElements }) => {
-      replaceElements(newElements);
-    });
-
-    on("canvas-cleared", () => {
-      replaceElements([]);
-    });
+    on("elements-synced", ({ elements: newElements }) => replaceElements(newElements));
+    on("canvas-cleared", () => replaceElements([]));
 
     return () => {
-      off("element-drawn");
-      off("element-updated");
-      off("element-deleted");
-      off("elements-synced");
-      off("canvas-cleared");
+      off("element-drawn"); off("element-updated"); off("element-deleted");
+      off("elements-synced"); off("canvas-cleared");
     };
   }, [joined, on, off, setElements, replaceElements]);
 
   // Keyboard shortcuts for undo/redo
   useEffect(() => {
     const handleKeyDown = (e) => {
-      if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")
-        return;
+      if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
 
       if ((e.ctrlKey || e.metaKey) && e.key === "z") {
         e.preventDefault();
-        if (e.shiftKey) {
-          const newElements = redo();
-          if (newElements) emit("sync-elements", { elements: newElements });
-        } else {
-          const newElements = undo();
-          if (newElements) emit("sync-elements", { elements: newElements });
-        }
+        const newElements = e.shiftKey ? redo() : undo();
+        if (newElements) emit("sync-elements", { elements: newElements });
       }
       if ((e.ctrlKey || e.metaKey) && e.key === "y") {
         e.preventDefault();
@@ -132,54 +153,23 @@ export default function RoomPage() {
         if (newElements) emit("sync-elements", { elements: newElements });
       }
 
-      // Delete selected element
       if ((e.key === "Delete" || e.key === "Backspace") && selectedElement) {
-        setElements(
-          (prev) => prev.filter((el) => el.id !== selectedElement.id),
-          true
-        );
+        setElements((prev) => prev.filter((el) => el.id !== selectedElement.id), true);
         emit("delete-element", { elementId: selectedElement.id });
         setSelectedElement(null);
       }
     };
-
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [undo, redo, emit, selectedElement, setElements]);
 
-  // Handlers
-  const handleDrawElement = useCallback(
-    (element) => {
-      emit("draw-element", { element });
-    },
-    [emit]
-  );
-
-  const handleUpdateElement = useCallback(
-    (element) => {
-      emit("update-element", { element });
-    },
-    [emit]
-  );
-
-  const handleDeleteElement = useCallback(
-    (elementId) => {
-      emit("delete-element", { elementId });
-    },
-    [emit]
-  );
-
-  const handleCursorMove = useCallback(
-    (x, y) => {
-      emitCursorMove(x, y, username);
-    },
-    [emitCursorMove, username]
-  );
-
-  const handleStyleChange = useCallback((updates) => {
-    setStyle((prev) => ({ ...prev, ...updates }));
-  }, []);
-
+  // Event Handlers
+  const handleDrawElement = useCallback((element) => emit("draw-element", { element }), [emit]);
+  const handleUpdateElement = useCallback((element) => emit("update-element", { element }), [emit]);
+  const handleDeleteElement = useCallback((elementId) => emit("delete-element", { elementId }), [emit]);
+  const handleCursorMove = useCallback((x, y) => emitCursorMove(x, y, username), [emitCursorMove, username]);
+  const handleStyleChange = useCallback((updates) => setStyle((prev) => ({ ...prev, ...updates })), []);
+  
   const handleUndo = useCallback(() => {
     const newElements = undo();
     if (newElements) emit("sync-elements", { elements: newElements });
@@ -205,6 +195,45 @@ export default function RoomPage() {
     link.href = canvas.toDataURL("image/png");
     link.click();
   }, [roomId]);
+
+  // -- EXIT & SAVE FLOW --
+  const handleExitClick = () => setIsExitModalOpen(true);
+
+  const performSave = async () => {
+    if (!user) {
+        // Cache to local storage, push to login
+        localStorage.setItem(`collabdraw_cache_${roomId}`, JSON.stringify(elements));
+        router.push(`/login?redirect=/room/${roomId}`);
+        return;
+    }
+
+    try {
+        const res = await fetch(`${SERVER_URL}/api/rooms/save`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${token}`
+            },
+            body: JSON.stringify({ roomId, elements, name: `Board ${roomId}` })
+        });
+        
+        if (!res.ok) {
+            const errData = await res.json();
+            alert(`Error: ${errData.error}`);
+            return;
+        }
+
+        router.push("/");
+    } catch (err) {
+        console.error(err);
+        alert("Network error. Try again.");
+    }
+  };
+
+  const performLeaveWithoutSaving = () => {
+      router.push("/");
+  };
+
 
   if (!joined) {
     return (
@@ -245,6 +274,7 @@ export default function RoomPage() {
         onRedo={handleRedo}
         onClear={handleClear}
         onExport={handleExport}
+        onExit={handleExitClick}
       />
 
       <StylePanel style={style} onStyleChange={handleStyleChange} />
@@ -253,6 +283,13 @@ export default function RoomPage() {
         cursors={cursors}
         panOffset={panOffset}
         scale={scale}
+      />
+
+      <ExitModal 
+        isOpen={isExitModalOpen} 
+        onClose={() => setIsExitModalOpen(false)}
+        onSave={performSave}
+        onLeaveWithoutSaving={performLeaveWithoutSaving}
       />
     </div>
   );

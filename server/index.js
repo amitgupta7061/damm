@@ -1,9 +1,14 @@
+require("dotenv").config();
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 const cors = require("cors");
 const crypto = require("crypto");
 const roomManager = require("./roomManager");
+const connectDB = require("./config/db");
+
+const authRoutes = require("./routes/auth");
+const roomRoutes = require("./routes/rooms");
 
 function generateRoomId() {
   return crypto.randomBytes(4).toString("hex");
@@ -11,6 +16,14 @@ function generateRoomId() {
 
 const app = express();
 app.use(cors());
+app.use(express.json()); // Enable JSON body parsing for REST routes
+
+// Connect to MongoDB
+connectDB();
+
+// Mount Routes
+app.use("/api/auth", authRoutes);
+app.use("/api/rooms", roomRoutes);
 
 const server = http.createServer(app);
 
@@ -44,10 +57,33 @@ io.on("connection", (socket) => {
   });
 
   // Join an existing room
-  socket.on("join-room", ({ roomId, username }) => {
-    const room = roomManager.getRoom(roomId);
-    // Allow joining even if room doesn't exist yet (first user creates it)
-    roomManager.joinRoom(roomId, socket.id, username);
+  socket.on("join-room", async ({ roomId, username }) => {
+    let room = roomManager.getRoom(roomId);
+    
+    if (!room) {
+      try {
+        const mongoose = require('mongoose');
+        // If mongoose isn't connected or connecting, instantly reject rather than hanging
+        if (mongoose.connection.readyState !== 1) {
+             return socket.emit("room-error", "Room does not exist (not in memory, and DB is disabled).");
+        }
+
+        const Room = require('./models/Room');
+        const dbRoom = await Room.findOne({ roomId });
+        if (!dbRoom) {
+          return socket.emit("room-error", "Room does not exist.");
+        }
+        // Room exists in DB, load it to memory
+        roomManager.createRoom(roomId);
+        roomManager.joinRoom(roomId, socket.id, username);
+        roomManager.getRoom(roomId).elements = dbRoom.elements || [];
+      } catch(err) {
+        return socket.emit("room-error", "Database validation failed.");
+      }
+    } else {
+      roomManager.joinRoom(roomId, socket.id, username);
+    }
+
     socket.join(roomId);
     currentRoom = roomId;
 

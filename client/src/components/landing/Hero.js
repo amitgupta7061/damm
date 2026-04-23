@@ -1,7 +1,30 @@
+"use client";
 import Link from 'next/link';
-import React from 'react';
+import React, { useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { useSocket } from '@/hooks/useSocket';
+
 
 export default function Hero() {
+  const router = useRouter();
+  const { createRoom } = useSocket();
+  const [loading, setLoading] = useState(false);
+
+  const handleStartDrawing = async () => {
+    setLoading(true);
+    // Auto-generate name and UUID since this is the quick-start button
+    const username = sessionStorage.getItem("collabdraw-username") || "Creator";
+    sessionStorage.setItem("collabdraw-username", username);
+    
+    // In our implementation, socket createRoom returns the ID.
+    try {
+        const roomId = await createRoom(username);
+        router.push(`/room/${roomId}`);
+    } catch(err) {
+        console.error(err);
+        setLoading(false);
+    }
+  };
   return (
     <section className="hero-section">
       <div className="landing-bg">
@@ -22,11 +45,9 @@ export default function Hero() {
         </p>
 
         <div className="hero-cta">
-          <Link href="/workshop" style={{ textDecoration: 'none' }}>
-            <button className="btn-primary hero-btn">
-              Start Drawing <span className="arrow">→</span>
-            </button>
-          </Link>
+          <button className="btn-primary hero-btn" onClick={handleStartDrawing} disabled={loading}>
+            {loading ? "Starting..." : "Start Drawing"} <span className="arrow">→</span>
+          </button>
           <a href="#features" className="btn-secondary hero-btn outline-btn">
             Explore Features
           </a>

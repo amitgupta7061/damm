@@ -93,11 +93,20 @@ export function useSocket() {
 
   const joinRoom = useCallback(
     (roomId, username) => {
-      return new Promise((resolve) => {
+      return new Promise((resolve, reject) => {
         emit("join-room", { roomId, username });
-        socketRef.current?.once("room-joined", (data) => {
-          resolve(data);
-        });
+        
+        const handleSuccess = (data) => {
+            socketRef.current?.off("room-error", handleError);
+            resolve(data);
+        };
+        const handleError = (msg) => {
+            socketRef.current?.off("room-joined", handleSuccess);
+            reject(new Error(msg));
+        };
+
+        socketRef.current?.once("room-joined", handleSuccess);
+        socketRef.current?.once("room-error", handleError);
       });
     },
     [emit]
