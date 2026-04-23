@@ -148,8 +148,14 @@ export default function Canvas({
       }
 
       if (tool === TOOLS.TEXT) {
-        setTextInput({ x: pos.x, y: pos.y });
-        return;
+            e.preventDefault();
+            if (textInput) {
+              handleTextSubmit(textInputRef.current?.value || "");
+            }
+            setTextInput({ x: pos.x, y: pos.y });
+            setTimeout(() => {
+               textInputRef.current?.focus();
+            }, 10);
       }
 
       // Start drawing
@@ -340,6 +346,7 @@ export default function Canvas({
       />
       {textInput && (
         <textarea
+          key={`${textInput.x}-${textInput.y}`}
           ref={textInputRef}
           className="text-input-overlay"
           style={{
@@ -349,7 +356,10 @@ export default function Canvas({
             color: style.strokeColor,
           }}
           autoFocus
-          onBlur={(e) => handleTextSubmit(e.target.value)}
+          onBlur={(e) => {
+            const v = e.target.value;
+            setTimeout(() => handleTextSubmit(v), 100);
+          }}
           onKeyDown={(e) => {
             if (e.key === "Escape") {
               setTextInput(null);
