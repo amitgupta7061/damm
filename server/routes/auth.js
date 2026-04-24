@@ -9,6 +9,12 @@ const User = require('../models/User');
 let redis;
 try {
   redis = Redis.fromEnv();
+  // Upstash is REST-based, so we ping it to verify the credentials actively work
+  redis.ping().then(() => {
+     console.log("✅ Upstash Redis Connected");
+  }).catch(err => {
+     console.error("❌ Upstash Redis Ping Failed. Check credentials in .env.", err.message);
+  });
 } catch (e) {
   console.warn("⚠️  Upstash Redis not configured. OTP functionality will crash if invoked.");
 }
